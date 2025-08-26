@@ -1,17 +1,17 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-import models, database
 from datetime import date
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+import models, database
+from pydantic import BaseModel, EmailStr, Field
+from typing import Annotated
 
 app = FastAPI()
 
 # configure CORS
-origins=[
+origins = [
     "http://localhost",
-    "http://localhost:8000", # your frontend URL
-    # add more origins as needed
+    "http://localhost:5173",  # your frontend URL
 ]
 
 app.add_middleware(
@@ -33,34 +33,77 @@ def get_db():
     finally:
         db.close()
 
-@app.post("/customers")
-def add_customer(full_name: str, email: str, phone: str, dob: date, pan: str,
-                 employment_type: str, salary: float, departmentName:str, 
-                 designationName:str, companyName:str, designation:str, city: str, pincode: str,
-                 existing_loan: str, db: Session = Depends(get_db)):
 
-    new_customer = models.Customer(
-        full_name=full_name,
-        email=email,
-        phone=phone,
-        dob=dob,
-        pan=pan,
-        employment_type=employment_type,
-        salary=salary,
-        departmentName=departmentName,
-        designationName=designationName,
-        companyName=companyName,
-        designation=designation,
-        city=city,
-        pincode=pincode,
-        existing_loan=existing_loan
-    )
-    
+class CustomerCreate(BaseModel):
+    full_name: Annotated[str, Field(..., min_length=3, max_length=100)]
+    email: EmailStr
+    phone: Annotated[str, Field(..., pattern=r"^[6-9]\d{9}$")]  # Indian mobile
+    dob: date
+    pan: Annotated[str, Field(..., min_length=10, max_length=10, pattern=r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$")]
+    employment_type: Annotated[str, Field(..., min_length=2, max_length=50)]
+    salary: Annotated[float, Field(..., gt=0)]
+    departmentName: Annotated[str, Field(..., min_length=2, max_length=50)]
+    designationName: Annotated[str, Field(..., min_length=2, max_length=50)]
+    companyName: Annotated[str, Field(..., min_length=2, max_length=100)]
+    designation: Annotated[str, Field(..., min_length=2, max_length=50)]
+    city: Annotated[str, Field(..., min_length=2, max_length=50)]
+    pincode: Annotated[str, Field(..., pattern=r"^\d{6}$")]  # 6-digit pincode
+    existing_loan: Annotated[str, Field(..., min_length=2, max_length=20)]
+
+    # ✅ Age Validation
+    @classmethod
+    def validate_dob(cls, value: date) -> date:
+        today = date.today()
+        age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
+        if age < 18:
+            raise ValueError("Customer must be at least 18 years old")
+        return value
+
+# ✅ API Endpoint
+@app.post("/customers", status_code=status.HTTP_201_CREATED)
+def add_customer(customer: CustomerCreate, db: Session = Depends(get_db)):
+    # Check if email already exists
+    existing_email = db.query(models.Customer).filter(models.Customer.email == customer.email).first()
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
+    # Check if phone already exists
+    existing_phone = db.query(models.Customer).filter(models.Customer.phone == customer.phone).first()
+    if existing_phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phone number already registered"
+        )
+
+    # Create new customer
+    new_customer = models.Customer(**customer.dict())
     db.add(new_customer)
     db.commit()
     db.refresh(new_customer)
 
-    return {"message": "Customer added successfully", "{customer_id}customer": new_customer}
+    return {
+        "message": "Customer added successfully",
+        "customer_id": new_customer.id,
+        "data": {
+            "full_name": new_customer.full_name,
+            "email": new_customer.email,
+            "phone": new_customer.phone,
+            "dob": new_customer.dob.isoformat(),
+            "pan": new_customer.pan,
+            "employment_type": new_customer.employment_type,
+            "salary": new_customer.salary,
+            "departmentName": new_customer.departmentName,
+            "designationName": new_customer.designationName,
+            "companyName": new_customer.companyName,
+            "designation": new_customer.designation,
+            "city": new_customer.city,
+            "pincode": new_customer.pincode,
+            "existing_loan": new_customer.existing_loan
+        }
+    }
 
 # Get eligible banks for a customer
 @app.get("/customers/{customer_id}/eligible-banks")

@@ -26,6 +26,7 @@ def get_db():
     finally:
         db.close()
 
+
 class CustomerCreate(BaseModel):
     full_name: Annotated[str, Field(..., min_length=3, max_length=100)]
     email: EmailStr
@@ -34,13 +35,12 @@ class CustomerCreate(BaseModel):
     pan: Annotated[str, Field(..., min_length=10, max_length=10, pattern=r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$")]
     employment_type: Annotated[str, Field(..., min_length=2, max_length=50)]
     salary: Annotated[float, Field(..., gt=0)]
-    departmentName: str
-    designationName: str
-    companyName: str
-    designation: str
+    departmentName: str | None = None
+    designationName: str | None = None
+    companyName: str | None = None
+    designation: str | None = None
     city: str
     pincode: Annotated[str, Field(..., pattern=r"^\d{6}$")]
-    existing_loan: str
 
     @field_validator("dob")
     def validate_dob(cls, value: date):
@@ -66,27 +66,27 @@ def add_or_update_customer_and_get_banks(customer: CustomerCreate, db: Session =
         db.add(new_customer)
 
     new_customer.annualIncome = new_customer.salary * 12
-
     db.commit()
     db.refresh(new_customer)
 
+    # Age calculate
     today = date.today()
     age = today.year - new_customer.dob.year - (
         (today.month, today.day) < (new_customer.dob.month, new_customer.dob.day)
     )
 
+    # Banks eligibility
     banks = db.query(models.Bank).filter(models.Bank.pincode == new_customer.pincode).all()
     eligible_banks = []
-
     for bank in banks:
         rules = db.query(models.LoanRule).filter(models.LoanRule.bank_id == bank.bank_id).all()
         for rule in rules:
             if (
-                new_customer.salary >= rule.min_salary
+                float(new_customer.salary) >= float(rule.min_salary)
                 and new_customer.employment_type.lower() == rule.job_type.lower()
                 and rule.min_age <= age <= rule.max_age
             ):
-                max_loan = new_customer.salary * 5
+                max_loan = float(new_customer.salary) * 5
                 eligible_banks.append({
                     "bank_name": bank.bank_name,
                     "interest_rate": float(rule.interest_rate),
@@ -96,26 +96,47 @@ def add_or_update_customer_and_get_banks(customer: CustomerCreate, db: Session =
                     "max_loan_amount": f"Up to ₹{max_loan:,.0f}"
                 })
 
-    return {
-        "message": "Customer added/updated successfully",
-        "customer": {
-            "id": new_customer.id,
-            "full_name": new_customer.full_name,
-            "email": new_customer.email,
-            "phone": new_customer.phone,
-            "dob": new_customer.dob.isoformat(),
-            "pan": new_customer.pan,
-            "employment_type": new_customer.employment_type,
-            "salary": float(new_customer.salary),
-            "annualIncome": float(new_customer.annualIncome),
+    # Employment type ke hisaab se response fields filter
+    customer_data = {
+        "id": new_customer.id,
+        "full_name": new_customer.full_name,
+        "email": new_customer.email,
+        "phone": new_customer.phone,
+        "dob": new_customer.dob.isoformat(),
+        "pan": new_customer.pan,
+        "employment_type": new_customer.employment_type,
+        "city": new_customer.city,
+        "pincode": new_customer.pincode,
+        "age": age,
+    }
+
+    if new_customer.employment_type.lower() == "private employee":
+        customer_data.update({
+            "net_monthly_salary": float(new_customer.salary),
             "departmentName": new_customer.departmentName,
             "designationName": new_customer.designationName,
-            "companyName": new_customer.companyName,
-            "designation": new_customer.designation,
-            "city": new_customer.city,
-            "pincode": new_customer.pincode,
-            "existing_loan": new_customer.existing_loan,
-            "age": age
-        },
+            "companyName": new_customer.companyName
+        })
+
+    elif new_customer.employment_type.lower() == "government":
+        customer_data.update({
+            "net_monthly_salary": float(new_customer.salary),
+            "departmentName": new_customer.departmentName,
+            "designationName": new_customer.designationName
+        })
+
+    elif new_customer.employment_type.lower() == "self employed":
+        customer_data.update({
+            "net_annual_income": float(new_customer.annualIncome)
+        })
+
+    elif new_customer.employment_type.lower() == "self employed professional":
+        customer_data.update({
+            "net_annual_income": float(new_customer.annualIncome)
+        })
+
+    return {
+        "message": "Customer added/updated successfully",
+        "customer": customer_data,
         "eligible_banks": eligible_banks
     }

@@ -113,3 +113,4 @@ def add_or_update_customer_and_get_banks(customer: schemas.CustomerCreate, db: S
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Unexpected Error: {str(e)}\n{traceback.format_exc()}")
+
